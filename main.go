@@ -1,18 +1,28 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"sync"
+)
 
 type User struct {
 	ID      string
 	Name    string
 	Balance float64
+	mu      sync.Mutex
 }
 
 func (u *User) Deposit(amount float64) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+
 	u.Balance += amount
 }
 
 func (u *User) Withdraw(amount float64) error {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+
 	if amount <= 0 {
 		return fmt.Errorf("invalid amount")
 	}
@@ -63,6 +73,16 @@ func (ps *PaymentSystem) ProcessingTransactions(transaction Transaction) error {
 	return nil
 }
 
+func (ps *PaymentSystem) Worker(ch <-chan Transaction, wg *sync.WaitGroup) {
+	defer wg.Done()
+
+	for transaction := range ch {
+		if err := ps.ProcessingTransactions(transaction); err != nil {
+			fmt.Println("Ошибка:", err)
+		}
+	}
+}
+
 func main() {
 	ps := &PaymentSystem{
 		Users: make(map[string]*User),
@@ -77,20 +97,22 @@ func main() {
 	ps.AddTransaction(Transaction{FromID: "1", ToID: "2", Amount: 200})
 	ps.AddTransaction(Transaction{FromID: "2", ToID: "1", Amount: 50})
 
-	for _, transaction := range ps.TransactionQueue {
-		fmt.Printf(
-			"Перевод от %s к %s: %.2f\n",
-			transaction.FromID,
-			transaction.ToID,
-			transaction.Amount,
-		)
+	ch := make(chan Transaction, len(ps.TransactionQueue))
+	var wg sync.WaitGroup
 
-		if err := ps.ProcessingTransactions(transaction); err != nil {
-			fmt.Println("Ошибка:", err)
-		}
+	for i := 0; i < 3; i++ {
+		wg.Add(1)
+		go ps.Worker(ch, &wg)
 	}
 
+	for _, transaction := range ps.TransactionQueue {
+		ch <- transaction
+	}
+
+	close(ch)
+	wg.Wait()
+
 	fmt.Println("Итого:")
-	fmt.Printf("Анна: %.2f\n", ps.Users["1"].Balance)
-	fmt.Printf("Иван: %.2f\n", ps.Users["2"].Balance)
+	fmt.Printf("Анна: %.2f (ожидается 850)\n", ps.Users["1"].Balance)
+	fmt.Printf("Иван: %.2f (ожидается 650)\n", ps.Users["2"].Balance)
 }
